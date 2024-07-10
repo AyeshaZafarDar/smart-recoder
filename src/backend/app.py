@@ -1,3 +1,7 @@
+"""
+Module to create a Flask application for the backend server.
+"""
+
 import os
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
@@ -6,18 +10,20 @@ from flask_bcrypt import Bcrypt
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from flask_cors import CORS
 from cryptography.fernet import Fernet
-import speech_recognition as sr
-from pydub import AudioSegment
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-import random
+from celery import Celery
+from celery.result import AsyncResult
+from models import db, User
 
 # Load environment variables from .env file
 load_dotenv()
 
-db = SQLAlchemy()
 bcrypt = Bcrypt()
 jwt = JWTManager()
+celery = Celery(
+    __name__,
+    broker=os.getenv('CELERY_BROKER_URL'),
+    backend=os.getenv('CELERY_RESULT_BACKEND')
+)
 
 ALLOWED_EXTENSIONS = {'webm'}
 
@@ -25,27 +31,27 @@ ALLOWED_EXTENSIONS = {'webm'}
 def create_app():
     app = Flask(__name__)
 
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///site.db'
-    app.config['SECRET_KEY'] = 'secret123'
-    app.config['JWT_SECRET_KEY'] = 'secret1234'
+    app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('SQLALCHEMY_DATABASE_URI')
     app.config['UPLOAD_FOLDER'] = os.getenv('UPLOAD_FOLDER')
     app.config['WAV_UPLOAD_FOLDER'] = os.getenv('WAV_UPLOAD_FOLDER')
-
-    # Load encryption key from environment variable
     app.config['ENCRYPTION_KEY'] = os.getenv('ENCRYPTION_KEY')
-
+    
     if app.config['ENCRYPTION_KEY'] is None:
         raise ValueError("Encryption key not found in environment variables.")
 
-    CORS(app, resources={r"/*": {"origins": "*"}} )
+    app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
+    app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
+
+    CORS(app, resources={r"/*": {"origins": "*"}})
     db.init_app(app)
     bcrypt.init_app(app)
     jwt.init_app(app)
 
-    executor = ThreadPoolExecutor()
-
     @app.before_request
     def check_app_version():
+        '''
+        Function to check the client application version
+        '''
         app_version = request.headers.get("app-version")
         if app_version and app_version < "1.2.0":
             return jsonify({"message": "Please update your client application."}), 426
@@ -55,15 +61,21 @@ def create_app():
 
     @app.route('/')
     def index():
+        '''
+        Function to return the status of the server
+        '''
         return jsonify({'status': 200})
 
     @app.route('/register', methods=['POST'])
     def register():
+        '''
+        Function to register a new user
+        '''
         if 'username' not in request.json or 'password' not in request.json:
             return jsonify({'message': 'Username and password are required'}), 400
         if User.query.filter_by(username=request.json['username']).first():
             return jsonify({'message': 'User already exists'}), 400
-        
+
         data = request.get_json()
         hashed_password = bcrypt.generate_password_hash(data['password']).decode('utf-8')
         new_user = User(username=data['username'], password=hashed_password, motto=None)
@@ -81,6 +93,9 @@ def create_app():
 
     @app.route('/login', methods=['POST'])
     def login():
+        '''
+        Function to login a user
+        '''
         if 'username' not in request.json or 'password' not in request.json:
             return jsonify({'message': 'Username and password are required'}), 400
         if not User.query.filter_by(username=request.json['username']).first():
@@ -95,6 +110,9 @@ def create_app():
     @app.route('/user', methods=['GET'])
     @jwt_required()
     def user():
+        '''
+        Function to get user details
+        '''
         current_user = get_jwt_identity()
         user = User.query.filter_by(username=current_user['username']).first()
         decrypted_motto = None
@@ -107,44 +125,47 @@ def create_app():
         }), 200
 
     def encrypt_message(message, key):
+        '''
+        Function to encrypt a message using Fernet encryption
+        '''
         cipher_suite = Fernet(key)
         cipher_text = cipher_suite.encrypt(message.encode())
         return cipher_text
 
     def decrypt_message(cipher_text, key):
+        '''
+        Function to decrypt a cipher text using Fernet encryption
+        '''
         cipher_suite = Fernet(key)
         plain_text = cipher_suite.decrypt(cipher_text).decode()
         return plain_text
 
     def local_transcription_service(file_path):
-        # Simulate asynchronous processing with random time delay (5-15 seconds)
-        async def transcribe_audio():
-            await asyncio.sleep(random.randint(5, 15))
-            audio = AudioSegment.from_file(file_path)
-            wav_file_path = os.path.join(app.config['WAV_UPLOAD_FOLDER'], os.path.basename(file_path).replace('.webm', '.wav'))
-            audio.export(wav_file_path, format="wav")
+        '''
+        Function to transcribe an audio file using a local service
+        '''
+        # Mocked transcription service, returns a dummy result
+        return "This is a dummy transcription result."
 
-            recognizer = sr.Recognizer()
-            with sr.AudioFile(wav_file_path) as source:
-                try:
-                    audio_data = recognizer.record(source)
-                    transcript = recognizer.recognize_google(audio_data)
-                    return transcript
-                except sr.UnknownValueError:
-                    return "Unable to transcribe audio: Unknown Value Error"
-                except sr.RequestError:
-                    return "Unable to transcribe audio: Request Error (check your network connection)"
-                except Exception as e:
-                    return f"Error during transcription: {str(e)}"
+    @celery.task
+    def process_file(username, file_path):
+        '''
+        Function to process an uploaded file
+        '''
+        transcript = local_transcription_service(file_path)
+        encrypted_motto = encrypt_message(transcript, os.getenv('ENCRYPTION_KEY'))
 
-        # Run the transcription asynchronously
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        return loop.run_until_complete(transcribe_audio())
+        with create_app().app_context():
+            user = User.query.filter_by(username=username).first()
+            user.motto = encrypted_motto.decode()  # Store encrypted motto in the database
+            db.session.commit()
 
     @app.route('/upload', methods=['POST'])
     @jwt_required()
     def upload_file():
+        '''
+        Function to upload a file and start transcription
+        '''
         current_user = get_jwt_identity()
         username = current_user.get('username')
 
@@ -163,22 +184,35 @@ def create_app():
         file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(file_path)
 
-        transcript = local_transcription_service(file_path)
-        encrypted_motto = encrypt_message(transcript, app.config['ENCRYPTION_KEY'])
-        
-        user = User.query.filter_by(username=username).first()
-        user.motto = encrypted_motto.decode()  # Store encrypted motto in the database
-        db.session.commit()
+        task = process_file.delay(username, file_path)
+        return jsonify({"message": "File uploaded and transcription started",
+                        "task_id": task.id}), 201
 
-        return jsonify({"message": "File uploaded and motto updated successfully"}), 200
+    @app.route('/task_status/<task_id>', methods=['GET'])
+    def task_status(task_id):
+        '''
+        Function to get the status of a task
+        '''
+        task = AsyncResult(task_id)
+        if task.state == 'PENDING':
+            response = {
+                'state': task.state,
+                'status': 'Pending...'
+            }
+        elif task.state != 'FAILURE':
+            response = {
+                'state': task.state,
+                'status': task.info.get('status', '')
+            }
+        else:
+            response = {
+                'state': task.state,
+                'status': str(task.info)
+            }
+        return jsonify(response)
 
     return app
 
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(150), unique=True, nullable=False)
-    password = db.Column(db.String(150), nullable=False)
-    motto = db.Column(db.String(255), nullable=True)  # Updated to store encrypted motto
 
 if __name__ == '__main__':
     app = create_app()

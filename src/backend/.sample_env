@@ -1,0 +1,16 @@
+ENCRYPTION_KEY='9ERq___Kxf935VDUhX_4JW824I2sOvrQnSv018WUafQ='
+
+# Upload folder paths
+UPLOAD_FOLDER='uploads'
+WAV_UPLOAD_FOLDER='wav_uploads'
+
+# Broker and backend URLs for Celery
+CELERY_BROKER_URL='redis://localhost:6379/0'
+CELERY_RESULT_BACKEND='redis://localhost:6379/0'
+
+# Database URI
+SQLALCHEMY_DATABASE_URI='sqlite:///site.db'
+
+# Flask secret
+JWT_SECRET_KEY='supersecretjwtkey'
+SECRET_KEY='supersecretflaskkey'

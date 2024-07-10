@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { Button, CircularProgress } from "@mui/material";
+import { Button, CircularProgress, Snackbar } from "@mui/material";
+import MuiAlert from "@mui/material/Alert";
 import API_URL from "../config/config";
 
 const AudioRecorder: React.FC<{ doRefresh: () => void }> = ({ doRefresh }) => {
@@ -7,6 +8,8 @@ const AudioRecorder: React.FC<{ doRefresh: () => void }> = ({ doRefresh }) => {
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [snackbarOpen, setSnackbarOpen] = useState(false);
+  const [snackbarMessage, setSnackbarMessage] = useState("");
 
   useEffect(() => {
     // Cleanup media recorder on component unmount
@@ -56,9 +59,7 @@ const AudioRecorder: React.FC<{ doRefresh: () => void }> = ({ doRefresh }) => {
 
       try {
         const formData = new FormData();
-
-        // add data to formData
-        formData.append('file', blob, `user${username}.webm`)
+        formData.append('file', blob, `user${username}.webm`);
 
         const response = await fetch(`${API_URL}/upload`, {
           method: 'POST',
@@ -73,7 +74,10 @@ const AudioRecorder: React.FC<{ doRefresh: () => void }> = ({ doRefresh }) => {
           throw new Error('Failed to upload file');
         }
 
-        console.log("File uploaded successfully");
+        const data = await response.json();
+        console.log("File uploaded successfully:", data);
+        setSnackbarMessage(data.message); // Set snackbar message
+        setSnackbarOpen(true); // Open snackbar
         setAudioChunks([]); // Clear audioChunks after successful upload
         doRefresh(); // Refresh user data after successful upload
       } catch (error) {
@@ -85,8 +89,23 @@ const AudioRecorder: React.FC<{ doRefresh: () => void }> = ({ doRefresh }) => {
     }
   };
 
+  const handleSnackbarClose = () => {
+    setSnackbarOpen(false);
+  };
+
   return (
     <div>
+        <Snackbar
+          open={snackbarOpen}
+          autoHideDuration={6000}
+          onClose={handleSnackbarClose}
+          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+        >
+          <MuiAlert elevation={6} variant="filled" severity="success" onClose={handleSnackbarClose}>
+            {snackbarMessage}
+          </MuiAlert>
+        </Snackbar>
+
       {recording ? (
         <Button variant="contained" color="secondary" onClick={stopRecording}>Stop Recording</Button>
       ) : (
@@ -102,6 +121,7 @@ const AudioRecorder: React.FC<{ doRefresh: () => void }> = ({ doRefresh }) => {
           {isUploading ? <CircularProgress size={24} /> : "Upload Recording"}
         </Button>
       )}
+
     </div>
   );
 };
