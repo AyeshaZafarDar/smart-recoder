@@ -116,6 +116,8 @@ smart_recorder/
 │   │   ├── .env
 │   │   ├── instance/
 │   │   │   └── site.db
+│   │   ├── models/
+│   │   │   └── user.py
 │   │   ├── uploads/
 │   │   ├── wav_uploads/
 │   │   └── venv/
